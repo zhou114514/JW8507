@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![PyQt5](https://img.shields.io/badge/PyQt5-5.15+-green.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)
 
 ## 功能特性
 
