@@ -1,0 +1,6 @@
+{
+    "channel_count": 2,
+    "default_baudrate": 115200,
+    "serial_timeout": 0.1
+}
+
