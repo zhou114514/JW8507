@@ -4,7 +4,7 @@ JW8507 单通道控制界面组件
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, 
     QComboBox, QPushButton, QLineEdit, QLCDNumber,
-    QFrame, QGroupBox, QSizePolicy
+    QFrame, QGroupBox, QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QDoubleValidator, QPalette, QColor
@@ -223,8 +223,8 @@ class ChannelWidget(QWidget):
         self.atten_input.setPlaceholderText("0.00")
         self.atten_input.setFixedSize(75, 30)
         self.atten_input.setAlignment(Qt.AlignRight)
-        # 设置输入验证器，允许0-99.99的浮点数
-        validator = QDoubleValidator(0.0, 99.99, 2)
+        # 设置输入验证器，允许0-60的浮点数
+        validator = QDoubleValidator(0.0, 60.0, 2)
         validator.setNotation(QDoubleValidator.StandardNotation)
         self.atten_input.setValidator(validator)
         main_layout.addWidget(self.atten_input)
@@ -399,6 +399,19 @@ class ChannelWidget(QWidget):
             
         try:
             attenuation = float(text)
+            
+            # 检查衰减值范围 0-60 dB
+            if attenuation < 0 or attenuation > 60:
+                QMessageBox.warning(
+                    self, 
+                    "范围错误", 
+                    f"衰减值超出范围！\n\n有效范围: 0 ~ 60 dB\n当前输入: {attenuation} dB",
+                    QMessageBox.Ok
+                )
+                self.atten_input.selectAll()
+                self.atten_input.setFocus()
+                return
+            
             success = self.jw8507.set_attenuation(self.address, attenuation)
             if success:
                 self.lcd_display.display(f"{attenuation:.2f}")
