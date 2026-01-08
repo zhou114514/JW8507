@@ -137,14 +137,16 @@ class JW8507:
         result = False
         command=0x072E
         response = self.send_command(address=address, command=command, response_length=20)
-        if len(response) >= 20:
+        if len(response) >= 0:
+            # 返回数据是不定长，需要通过第一字节的值来确定有多少个波长，数据有多长，所以需要先读取第一字节来确定有多少个波长
             if int.from_bytes(response[3:5], byteorder="big") == (command + 1):
-                result = True
                 count = response[5]
+                data_length = count * 2
+                data = response[6:6+data_length]
                 waveLength_list = []
-                for i in range(6, 6 + count * 2, 2):
-                    waveLength_list.append(int.from_bytes(response[i:i+2], byteorder="little"))
-                return result, {
+                for i in range(0, data_length, 2):
+                    waveLength_list.append(int.from_bytes(data[i:i+2], byteorder="little"))
+                return True, {
                     "波长列表": waveLength_list
                 }
         return result, {}
@@ -284,26 +286,26 @@ if __name__ == "__main__":
     version = jw8507.read_version()
     print(f"版本信息: {version}")
 
-    # 读取波长信息
-    waveLength_info = jw8507.read_waveLength_info()
-    print(f"波长信息: {waveLength_info}")
+    # # 读取波长信息
+    # waveLength_info = jw8507.read_waveLength_info()
+    # print(f"波长信息: {waveLength_info}")
 
-    # 读取实时信息
-    RT_info = jw8507.read_RT_info()
-    print(f"实时信息: {RT_info}")
+    # # 读取实时信息
+    # RT_info = jw8507.read_RT_info()
+    # print(f"实时信息: {RT_info}")
 
-    # 默认显示
-    default_display = jw8507.default_display()
-    print(f"默认显示: {default_display}")
+    # # 默认显示
+    # default_display = jw8507.default_display()
+    # print(f"默认显示: {default_display}")
 
-    # 设置波长
-    jw8507.set_waveLength(address=0x02, waveLength=1563)
-    # 设置衰减
-    jw8507.set_attenuation(address=0x02, attenuation=10.0)
-    # 设定关断/清零
-    jw8507.set_CloseReset(address=0x01, ctrl="Reset")
-    # # 设定输出模式
-    # jw8507.set_outputMode(address=0x01, mode="Lock")
+    # # 设置波长
+    # jw8507.set_waveLength(address=0x02, waveLength=1563)
+    # # 设置衰减
+    # jw8507.set_attenuation(address=0x02, attenuation=10.0)
+    # # 设定关断/清零
+    # jw8507.set_CloseReset(address=0x01, ctrl="Reset")
+    # 设定输出模式
+    jw8507.set_outputMode(address=0x01, mode="Lock")
     # # 设定锁定输出功率
     # jw8507.set_lockPower(address=0x01, power=0.0)
     # 断开连接

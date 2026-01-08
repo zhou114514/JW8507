@@ -743,6 +743,11 @@ class MainWindow(QMainWindow):
                 # 更新JW8507的波长列表
                 if wavelengths:
                     self.jw8507.waveLength_list = wavelengths
+                    # 更新通道界面的波长下拉框
+                    for channel_widget in self.channel_widgets:
+                        channel_widget.wave_combo.clear()
+                        for wavelength in wavelengths:
+                            channel_widget.wave_combo.addItem(f"{wavelength} nm", wavelength)
                     self._log(f"  已更新波长列表")
             else:
                 self._log("读取波长信息失败")
