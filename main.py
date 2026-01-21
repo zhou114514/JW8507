@@ -14,13 +14,22 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QPushButton, QScrollArea, QFrame,
     QGroupBox, QTextEdit, QSplitter, QMessageBox
 )
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
 from PyQt5 import QtCore
-
+import pandas as pd
+from TCPServer import TCPServer
 from JW8507 import JW8507
 from ChannelWidget import ChannelWidget
 
+def read_version() -> str:
+    """读取版本信息"""
+    try:
+        df = pd.read_csv("更新内容.csv", encoding="utf-8", header=None)
+        return df.iloc[-1, 0]
+    except Exception as e:
+        return "未知"
+    return "未知"
 
 def setup_file_logger(log_dir: str = "logs") -> logging.Logger:
     """
@@ -72,22 +81,152 @@ def setup_file_logger(log_dir: str = "logs") -> logging.Logger:
 class MainWindow(QMainWindow):
     """JW8507 程控衰减器控制主界面"""
     
+    # 定义信号用于处理TCP远程连接请求（在主线程中执行）
+    tcp_connect_signal = pyqtSignal()
+    
     def __init__(self):
         super().__init__()
+        self.version = read_version()
         self.ser = None
         self.jw8507 = None
         self.channel_widgets = []
         self.config = self._load_config()
         self.sidebar_expanded = True  # 侧边栏展开状态
         self.sidebar_width = 280  # 侧边栏宽度
-        
+        self.connected = False
         # 初始化文件日志记录器
         self.file_logger = setup_file_logger()
+        
+        # 用于TCP远程调用的结果存储
+        self._tcp_result_container = None
+        self._tcp_result_event = None
         
         self._init_ui()
         self._connect_signals()
         self._refresh_ports()
+
+        self.port_combo.setCurrentText(self.config["serial_port"])
         
+        # 启动TCP服务器（在所有UI初始化完成后）
+        self.tcp_server = TCPServer(address=self.config["server_address"], port=self.config["server_port"], func=self._handle_tcp_request)
+        self.tcp_server.start()
+
+    def _handle_tcp_request(self, request: str) -> str:
+        """处理TCP请求（在TCP服务器线程中调用）"""
+        try:
+            cmd = json.loads(request)
+        except (json.JSONDecodeError, ValueError) as e:
+            return [False, "", "Invalid JSON command"]
+
+        # 对于需要GUI操作的命令，使用线程安全的方式调用
+        opcode = cmd.get("opcode", "")
+        
+        # 这些命令不需要GUI操作，可以直接在当前线程执行
+        if opcode == "check":
+            return self._check()
+        elif opcode in ["SetWavelength", "SetAttenuation", "SetCloseReset"]:
+            # 这些命令只操作串口，不涉及GUI，可以直接调用
+            if opcode == "SetWavelength":
+                return self._set_wavelength(cmd["parameter"]["CH"], cmd["parameter"]["Wavelength"])
+            elif opcode == "SetAttenuation":
+                return self._set_attenuation(cmd["parameter"]["CH"], cmd["parameter"]["Attenuation"])
+            elif opcode == "SetCloseReset":
+                return self._set_close_reset(cmd["parameter"]["CH"], cmd["parameter"]["Set"])
+        elif opcode == "ConnectDevice":
+            # 连接设备需要在主线程中执行（会创建GUI组件）
+            # 使用信号-槽机制和事件来实现线程间同步
+            import threading
+            
+            # 创建结果容器和同步事件
+            self._tcp_result_container = {"result": None}
+            self._tcp_result_event = threading.Event()
+            
+            # 发射信号，让主线程处理连接
+            self.tcp_connect_signal.emit()
+            
+            # 等待主线程执行完成（最多等待10秒）
+            if self._tcp_result_event.wait(timeout=10.0):
+                result = self._tcp_result_container["result"]
+                # 清理
+                self._tcp_result_container = None
+                self._tcp_result_event = None
+                return result
+            else:
+                # 清理
+                self._tcp_result_container = None
+                self._tcp_result_event = None
+                return [False, "", "Command execution timeout"]
+        
+        return [False, "", "Unknown command"]
+
+    def _connect_device(self) -> tuple[bool, str, str]:
+        """连接设备（用于TCP远程调用的旧接口，保持兼容）"""
+        return self._connect(message=False)
+    
+    def _connect_device_for_tcp(self) -> tuple[bool, str, str]:
+        """连接设备（专门用于TCP远程调用，在主线程中执行）"""
+        if self.connected:
+            return [True, "", "Device already connected"]
+        return self._connect(message=False)
+    
+    def _handle_tcp_connect_in_main_thread(self):
+        """在主线程中处理TCP远程连接请求"""
+        try:
+            # 执行连接操作
+            result = self._connect_device_for_tcp()
+            
+            # 将结果存储到容器中
+            if self._tcp_result_container is not None:
+                self._tcp_result_container["result"] = result
+            
+            # 设置事件，通知TCP线程完成
+            if self._tcp_result_event is not None:
+                self._tcp_result_event.set()
+                
+        except Exception as e:
+            # 发生异常时也要通知TCP线程
+            if self._tcp_result_container is not None:
+                self._tcp_result_container["result"] = [False, "", f"Command execution error: {e}"]
+            if self._tcp_result_event is not None:
+                self._tcp_result_event.set()
+    
+    def _check(self) -> tuple[bool, str, str]:
+        """检查设备"""
+        return [True, self.version, ""]
+    
+    def _set_wavelength(self, CH:int, wavelength:int) -> tuple[bool, str, str]:
+        """设置波长"""
+        if CH < 1 or CH > self.config["channel_count"]:
+            return [False, "", "Out of range"]
+        if wavelength not in self.jw8507.waveLength_list:
+            return [False, "", "Wavelength not in list"]
+        if self.jw8507.set_waveLength(CH, wavelength):
+            return [True, "", "Wavelength set successfully"]
+        else:
+            return [False, "", "Wavelength set failed"]
+
+    def _set_attenuation(self, CH:int, attenuation:float) -> tuple[bool, str, str]:
+        """设置衰减"""
+        if CH < 1 or CH > self.config["channel_count"]:
+            return [False, "", "Out of range"]
+        if attenuation < 0 or attenuation > 60:
+            return [False, "", "Out of range"]
+        if self.jw8507.set_attenuation(CH, attenuation):
+            return [True, "", "Attenuation set successfully"]
+        else:
+            return [False, "", "Attenuation set failed"]
+
+    def _set_close_reset(self, CH:int, ctrl:str) -> tuple[bool, str, str]:
+        """设置关断/清零"""
+        if CH < 1 or CH > self.config["channel_count"]:
+            return [False, "", "Out of range"]
+        if ctrl not in ["Close", "Reset"]:
+            return [False, "", "Invalid control instruction"]
+        if self.jw8507.set_CloseReset(CH, ctrl):
+            return [True, "", "Close/Reset set successfully"]
+        else:
+            return [False, "", "Close/Reset set failed"]
+
     def _load_config(self) -> dict:
         """加载配置文件"""
         try:
@@ -99,29 +238,41 @@ class MainWindow(QMainWindow):
                 json.dump({
                     "channel_count": 2,
                     "default_baudrate": 115200,
-                    "serial_timeout": 0.1
+                    "serial_timeout": 0.1,
+                    "serial_port": "",
+                    "server_address": "127.0.0.1",
+                    "server_port": 10006,
                 }, f, ensure_ascii=False, indent=4)
             return {
                 "channel_count": 2,
                 "default_baudrate": 115200,
-                "serial_timeout": 0.1
+                "serial_timeout": 0.1,
+                "serial_port": "",
+                "server_address": "127.0.0.1",
+                "server_port": 10006,
             }
         except json.JSONDecodeError:
             with open("config.json", "w", encoding="utf-8") as f:
                 json.dump({
                     "channel_count": 2,
                     "default_baudrate": 115200,
-                    "serial_timeout": 0.1
+                    "serial_timeout": 0.1,
+                    "serial_port": "",
+                    "server_address": "127.0.0.1",
+                    "server_port": 10006,
                 }, f, ensure_ascii=False, indent=4)
             return {
                 "channel_count": 2,
                 "default_baudrate": 115200,
-                "serial_timeout": 0.1
+                "serial_timeout": 0.1,
+                "serial_port": "",
+                "server_address": "127.0.0.1",
+                "server_port": 10006,
             }
     
     def _init_ui(self):
         """初始化UI"""
-        self.setWindowTitle("JW8507 程控衰减器控制")
+        self.setWindowTitle(f"JW8507 程控衰减器控制 - {self.version}")
         self.setMinimumSize(1000, 600)
         self.resize(1200, 700)
         
@@ -512,6 +663,8 @@ class MainWindow(QMainWindow):
         self.connect_btn.clicked.connect(self._toggle_connection)
         self.read_version_btn.clicked.connect(self._read_version)
         self.read_wavelength_btn.clicked.connect(self._read_wavelength)
+        # 连接TCP远程连接信号（用于在主线程中执行GUI操作）
+        self.tcp_connect_signal.connect(self._handle_tcp_connect_in_main_thread)
     
     def _toggle_sidebar(self):
         """切换侧边栏展开/收起状态"""
@@ -552,17 +705,20 @@ class MainWindow(QMainWindow):
     
     def _toggle_connection(self):
         """切换连接状态"""
-        if self.ser and self.ser.is_open:
+        if self.connected:
             self._disconnect()
         else:
             self._connect()
     
-    def _connect(self):
+    def _connect(self, message:bool=True):
         """连接串口"""
         port = self.port_combo.currentData()
         if not port:
-            QMessageBox.warning(self, "警告", "请选择有效的串口")
-            return
+            if message:
+                QMessageBox.warning(self, "警告", "请选择有效的串口")
+            else:
+                self._log("请选择有效的串口")
+            return [False, "", "Port not selected"]
         
         try:
             baudrate = int(self.baud_combo.currentText())
@@ -582,12 +738,15 @@ class MainWindow(QMainWindow):
                     # 读取失败，可能是错误的串口
                     self._log("设备验证失败：未收到有效响应")
                     self._force_disconnect()
-                    QMessageBox.warning(self, "设备验证失败", 
-                        "未能读取到设备版本信息，请确认：\n"
-                        "1. 是否选择了正确的串口\n"
-                        "2. 波特率设置是否正确\n"
-                        "3. 设备是否已正确连接")
-                    return
+                    if message:
+                        QMessageBox.warning(self, "设备验证失败", 
+                            "未能读取到设备版本信息，请确认：\n"
+                            "1. 是否选择了正确的串口\n"
+                            "2. 波特率设置是否正确\n"
+                            "3. 设备是否已正确连接")
+                    else:
+                        self._log("设备验证失败：未收到有效响应")
+                    return [False, "", "Device verification failed: no valid response"]
                 else:
                     self._log("设备验证成功")
                     self._log("=== 版本信息 ===")
@@ -597,19 +756,25 @@ class MainWindow(QMainWindow):
                 # 写超时或读超时
                 self._log(f"设备验证超时: {e}")
                 self._force_disconnect()
-                QMessageBox.warning(self, "连接超时", 
-                    "串口通信超时，请确认：\n"
-                    "1. 是否选择了正确的串口\n"
-                    "2. 波特率设置是否正确\n"
-                    "3. 设备是否已正确连接")
-                return
+                if message:
+                    QMessageBox.warning(self, "连接超时", 
+                        "串口通信超时，请确认：\n"
+                        "1. 是否选择了正确的串口\n"
+                        "2. 波特率设置是否正确\n"
+                        "3. 设备是否已正确连接")
+                else:
+                    self._log("串口通信超时")
+                return [False, "", "Device verification timeout"]
             except Exception as e:
                 # 其他异常
                 self._log(f"设备验证异常: {e}")
                 self._force_disconnect()
-                QMessageBox.warning(self, "连接错误", 
-                    f"设备验证时发生错误：{e}\n\n请确认串口和设备设置是否正确")
-                return
+                if message:
+                    QMessageBox.warning(self, "连接错误", 
+                        f"设备验证时发生错误：{e}\n\n请确认串口和设备设置是否正确")
+                else:
+                    self._log(f"设备验证异常: {e}")
+                return [False, "", f"Device verification exception: {e}"]
             
             # 更新UI状态
             self.connect_btn.setText("断开")
@@ -627,11 +792,19 @@ class MainWindow(QMainWindow):
             self._add_channel_widgets()
             
         except serial.SerialException as e:
-            QMessageBox.critical(self, "连接失败", f"无法连接到串口: {e}")
-            self._log(f"连接失败: {e}")
+            if message:
+                QMessageBox.critical(self, "连接失败", f"无法连接到串口: {e}")
+            else:
+                self._log(f"连接失败: {e}")
+            return [False, "", f"Connection failed: {e}"]
+
+        self.connected = True
+        self.config["serial_port"] = port
+        return [True, "", "Connection successful"]
     
     def _disconnect(self):
         """断开连接"""
+        self.connected = False
         if self.jw8507:
             self.jw8507.default_display()
             self.jw8507.disconnect()
@@ -782,6 +955,7 @@ class MainWindow(QMainWindow):
         # 断开连接
         if self.ser and self.ser.is_open:
             self._disconnect()
+        json.dump(self.config, open("config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=4)
         event.accept()
 
 
