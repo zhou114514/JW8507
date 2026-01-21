@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         # 这些命令不需要GUI操作，可以直接在当前线程执行
         if opcode == "check":
             return self._check()
-        elif opcode in ["SetWavelength", "SetAttenuation", "SetCloseReset"]:
+        elif opcode in ["SetWavelength", "SetAttenuation", "SetCloseReset", "AdjustAttenuation"]:
             # 这些命令只操作串口，不涉及GUI，可以直接调用
             if opcode == "SetWavelength":
                 return self._set_wavelength(cmd["parameter"]["CH"], cmd["parameter"]["Wavelength"])
@@ -132,6 +132,8 @@ class MainWindow(QMainWindow):
                 return self._set_attenuation(cmd["parameter"]["CH"], cmd["parameter"]["Attenuation"])
             elif opcode == "SetCloseReset":
                 return self._set_close_reset(cmd["parameter"]["CH"], cmd["parameter"]["Set"])
+            elif opcode == "AdjustAttenuation":
+                return self._adjust_attenuation(cmd["parameter"]["CH"], cmd["parameter"]["Delta"])
         elif opcode == "ConnectDevice":
             # 连接设备需要在主线程中执行（会创建GUI组件）
             # 使用信号-槽机制和事件来实现线程间同步
@@ -226,6 +228,18 @@ class MainWindow(QMainWindow):
             return [True, "", "Close/Reset set successfully"]
         else:
             return [False, "", "Close/Reset set failed"]
+
+    def _adjust_attenuation(self, CH:int, delta:float) -> tuple[bool, str, str]:
+        """调整衰减"""
+        if CH < 1 or CH > self.config["channel_count"]:
+            return [False, "", "Out of range"]
+        now_attenuation = self.jw8507.read_RT_info(CH)["衰减值"]
+        if now_attenuation + delta < 0 or now_attenuation + delta > 60:
+            return [False, "", "Out of range"]
+        if self.jw8507.set_attenuation(CH, now_attenuation + delta):
+            return [True, "", "Attenuation adjusted successfully"]
+        else:
+            return [False, "", "Attenuation adjustment failed"]
 
     def _load_config(self) -> dict:
         """加载配置文件"""
