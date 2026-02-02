@@ -25,11 +25,21 @@ class ChannelWidget(QWidget):
     # 日志信号，用于将操作日志发送到主界面
     log_signal = pyqtSignal(str)
     
-    def __init__(self, address: int, jw8507: JW8507, parent=None):
+    def __init__(self, address: int, jw8507: JW8507, refresh_interval: int = 500, parent=None):
+        """
+        初始化通道控件
+        
+        :param address: 通道地址
+        :param jw8507: JW8507控制类实例
+        :param refresh_interval: 刷新间隔（毫秒），默认500ms
+        :param parent: 父窗口
+        """
         super().__init__(parent)
         self.address = address
         self.jw8507 = jw8507
         self.current_attenuation = 0.0
+        self.refresh_interval = refresh_interval
+        self._last_refresh_failed = False  # 用于避免频繁输出错误日志
         
         self._init_ui()
         self._connect_signals()
@@ -329,7 +339,8 @@ class ChannelWidget(QWidget):
         """设置刷新定时器"""
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_display)
-        # 默认不启动自动刷新，可通过 start_auto_refresh() 开启
+        # 启动自动刷新，使用配置的刷新间隔
+        self.refresh_timer.start(self.refresh_interval)
     
     def _load_initial_data(self):
         """
@@ -370,14 +381,36 @@ class ChannelWidget(QWidget):
         self.refresh_timer.stop()
         
     def refresh_display(self):
-        """刷新LCD显示"""
+        """
+        刷新LCD显示
+        
+        从设备读取实际的衰减值和波长信息，更新UI显示
+        这样无论是本地设置还是远程控制，都能正确反映设备实际状态
+        """
         try:
             success, info = self.jw8507.read_RT_info(self.address)
             if success:
+                # 更新衰减值显示
                 self.current_attenuation = info.get("衰减值", 0.0)
                 self.lcd_display.display(f"{self.current_attenuation:.2f}")
+                
+                # 更新波长下拉框（仅当波长发生变化时）
+                wavelength = info.get("波长信息", None)
+                if wavelength is not None:
+                    current_wavelength = self.wave_combo.currentData()
+                    if current_wavelength != wavelength:
+                        # 在下拉框中查找对应的波长并选中
+                        for i in range(self.wave_combo.count()):
+                            if self.wave_combo.itemData(i) == wavelength:
+                                self.wave_combo.setCurrentIndex(i)
+                                break
         except Exception as e:
-            self._emit_log(f"刷新通道 {self.address} 失败: {e}")
+            # 避免频繁输出错误日志，只在第一次失败时输出
+            if not hasattr(self, '_last_refresh_failed') or not self._last_refresh_failed:
+                self._emit_log(f"刷新通道 {self.address} 失败: {e}")
+                self._last_refresh_failed = True
+        else:
+            self._last_refresh_failed = False
             
     def _on_set_wavelength(self):
         """设置波长"""
@@ -414,9 +447,9 @@ class ChannelWidget(QWidget):
             
             success = self.jw8507.set_attenuation(self.address, attenuation)
             if success:
-                self.lcd_display.display(f"{attenuation:.2f}")
-                self.current_attenuation = attenuation
                 self._emit_log(f"通道 {self.address} 衰减设置成功: {attenuation} dB")
+                # 不再立即更新LCD显示，而是让定时器自动刷新实际值
+                # 这样可以确保显示的是设备实际的衰减值
             else:
                 self._emit_log(f"通道 {self.address} 衰减设置失败")
         except ValueError:
@@ -429,14 +462,9 @@ class ChannelWidget(QWidget):
         try:
             success = self.jw8507.set_CloseReset(self.address, "Close")
             if success:
-                self.lcd_display.setStyleSheet("""
-                    QLCDNumber {
-                        background-color: transparent;
-                        color: #ff3333;
-                        border: none;
-                    }
-                """)
                 self._emit_log(f"通道 {self.address} 已关断")
+                # LCD颜色会在下次刷新时根据实际读取的值自动更新
+                # 关断后衰减值通常为最大值（60dB或更大）
             else:
                 self._emit_log(f"通道 {self.address} 关断失败")
         except Exception as e:
@@ -454,9 +482,8 @@ class ChannelWidget(QWidget):
                         border: none;
                     }
                 """)
-                self.lcd_display.display(0.00)
-                self.current_attenuation = 0.0
                 self._emit_log(f"通道 {self.address} 已重置")
+                # 不再立即更新显示值，让定时器自动刷新实际值
             else:
                 self._emit_log(f"通道 {self.address} 重置失败")
         except Exception as e:

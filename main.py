@@ -1,6 +1,7 @@
 """
 JW8507 程控衰减器控制主界面
 """
+import socket
 import sys
 import os
 import json
@@ -108,7 +109,7 @@ class MainWindow(QMainWindow):
         self.port_combo.setCurrentText(self.config["serial_port"])
         
         # 启动TCP服务器（在所有UI初始化完成后）
-        self.tcp_server = TCPServer(address=self.config["server_address"], port=self.config["server_port"], func=self._handle_tcp_request)
+        self.tcp_server = TCPServer(address=self.config["server_address"] if self.config["server_address"] else socket.gethostbyname(socket.gethostname()), port=self.config["server_port"], func=self._handle_tcp_request)
         self.tcp_server.start()
 
     def _handle_tcp_request(self, request: str) -> str:
@@ -233,13 +234,17 @@ class MainWindow(QMainWindow):
         """调整衰减"""
         if CH < 1 or CH > self.config["channel_count"]:
             return [False, "", "Out of range"]
-        now_attenuation = self.jw8507.read_RT_info(CH)["衰减值"]
-        if now_attenuation + delta < 0 or now_attenuation + delta > 60:
+        result, info = self.jw8507.read_RT_info(CH)
+        if not result:
+            return [False, "", "Read attenuation failed"]
+        now_attenuation = info.get("衰减值", 0.0)
+        new_attenuation = now_attenuation + delta
+        if new_attenuation < 0 or new_attenuation > 60:
             return [False, "", "Out of range"]
-        if self.jw8507.set_attenuation(CH, now_attenuation + delta):
-            return [True, "", "Attenuation adjusted successfully"]
+        if self.jw8507.set_attenuation(CH, new_attenuation):
+            return [True, "", f"Attenuation adjusted to {new_attenuation:.2f}dB successfully"]
         else:
-            return [False, "", "Attenuation adjustment failed"]
+            return [False, "", f"Attenuation adjustment to {new_attenuation:.2f}dB failed"]
 
     def _load_config(self) -> dict:
         """加载配置文件"""
@@ -256,6 +261,7 @@ class MainWindow(QMainWindow):
                     "serial_port": "",
                     "server_address": "127.0.0.1",
                     "server_port": 10006,
+                    "refresh_interval_ms": 500,
                 }, f, ensure_ascii=False, indent=4)
             return {
                 "channel_count": 2,
@@ -264,6 +270,7 @@ class MainWindow(QMainWindow):
                 "serial_port": "",
                 "server_address": "127.0.0.1",
                 "server_port": 10006,
+                "refresh_interval_ms": 500,
             }
         except json.JSONDecodeError:
             with open("config.json", "w", encoding="utf-8") as f:
@@ -274,6 +281,7 @@ class MainWindow(QMainWindow):
                     "serial_port": "",
                     "server_address": "127.0.0.1",
                     "server_port": 10006,
+                    "refresh_interval_ms": 500,
                 }, f, ensure_ascii=False, indent=4)
             return {
                 "channel_count": 2,
@@ -282,6 +290,7 @@ class MainWindow(QMainWindow):
                 "serial_port": "",
                 "server_address": "127.0.0.1",
                 "server_port": 10006,
+                "refresh_interval_ms": 500,
             }
     
     def _init_ui(self):
@@ -868,19 +877,20 @@ class MainWindow(QMainWindow):
         # 隐藏提示
         self.hint_label.hide()
         
-        # 获取配置的通道数量
+        # 获取配置的通道数量和刷新间隔
         channel_count = self.config.get("channel_count", 8)
+        refresh_interval = self.config.get("refresh_interval_ms", 500)
         
         # 添加通道控件
         for i in range(1, channel_count + 1):
-            channel_widget = ChannelWidget(address=i, jw8507=self.jw8507)
+            channel_widget = ChannelWidget(address=i, jw8507=self.jw8507, refresh_interval=refresh_interval)
             # 连接通道日志信号到主界面日志
             channel_widget.log_signal.connect(self._log)
             self.channel_widgets.append(channel_widget)
             # 在 stretch 之前插入
             self.channel_layout.insertWidget(self.channel_layout.count() - 1, channel_widget)
         
-        self._log(f"已添加 {channel_count} 个通道控制界面")
+        self._log(f"已添加 {channel_count} 个通道控制界面（刷新间隔: {refresh_interval}ms）")
     
     def _remove_channel_widgets(self):
         """移除所有通道控件"""

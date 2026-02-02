@@ -214,3 +214,4 @@ Confiles/用例/*
 Confiles/qt.ini
 Confiles/settings.json
 logs/
+config.json
